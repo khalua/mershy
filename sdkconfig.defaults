@@ -1,0 +1,35 @@
+# ESP32-S3-Touch-AMOLED-1.75C -- 16MB flash, 8MB octal PSRAM.
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# HTTPS to Anthropic / Deepgram / ElevenLabs. TLS buffers go to PSRAM so
+# three handshakes in a row don't exhaust internal RAM.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
+# Network throughput. IDF's default 5760-byte TCP send buffer let only
+# ~5.7KB be in flight per round trip, which made the Deepgram audio upload
+# take ~4s.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65534
+# The receive window must NOT be raised to match: a 64KB window lets servers
+# burst ~44 packets, overflowing the WiFi driver's 16 static + 32 dynamic RX
+# buffers. Dropped packets then wait out TCP's retransmit timer (>=1s,
+# doubling), which stalled ElevenLabs audio for 4-5s mid-word. 8 * MSS
+# stays inside the static RX buffers and is plenty for 48KB/s of audio.
+CONFIG_LWIP_TCP_WND_DEFAULT=11520
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=64
+CONFIG_ESP_WIFI_TX_BA_WIN=32
+
+# LVGL (via the esp_lvgl_port + lvgl managed components)
+CONFIG_LV_COLOR_16_SWAP=y
+CONFIG_LV_MEM_CUSTOM=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_36=y

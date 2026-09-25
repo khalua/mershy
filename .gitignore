@@ -1,0 +1,10 @@
+.DS_Store
+.pio/
+build/
+managed_components/
+sdkconfig.old
+src/secrets.h
+*.bin
+src/api_keys.h
+.env
+art/.venv/

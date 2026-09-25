@@ -1,0 +1,10 @@
+## IDF Component Manager Manifest File
+dependencies:
+  idf:
+    version: '>=5.3.0'
+  waveshare/esp_lcd_sh8601: 1.0.2
+  espressif/esp_io_expander_tca9554: ==2.0.0
+  espressif/esp_codec_dev: ~1.4.0
+  espressif/esp_lvgl_port: ~2.6.0
+  lvgl/lvgl: ~9.3.0
+  espressif/cjson: "^1.7.18"

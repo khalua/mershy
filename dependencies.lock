@@ -1,0 +1,57 @@
+dependencies:
+  espressif/cjson:
+    component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
+    source:
+      service_url: https://api.components.espressif.com/
+      type: service
+    version: 1.7.19~2
+  espressif/cmake_utilities:
+    component_hash: 351350613ceafba240b761b4ea991e0f231ac7a9f59a9ee901f751bddc0bb18f
+    source:
+      service_url: https://api.components.espressif.com/
+      type: service
+    version: 0.5.3
+  espressif/esp_codec_dev:
+    component_hash: 3a1df01ee46d64c55155341bb6f4834db33db7dbd9b637e476e1eab64d01295a
+    source:
+      service_url: https://api.components.espressif.com/
+      type: service
+    version: 1.4.0
+  espressif/esp_io_expander:
+    component_hash: 7b7f91270172e46ca4597e3874f48d8412e280e8c295559f5922ec38656e3e5f
+    source:
+      service_url: https://api.components.espressif.com/
+      type: service
+    version: 1.2.1
+  espressif/esp_io_expander_tca9554:
+    component_hash: 8a9e3a7dbef589a54f814ff22e9121da86bce19d0e1ccffa53f5df6bb346a140
+    source:
+      service_url: https://api.components.espressif.com/
+      type: service
+    version: 2.0.0
+  espressif/esp_lvgl_port:
+    component_hash: 3264cc85d86a7c32b67d26a1353a57c67e7986bb293ebb1731801936b056e632
+    source:
+      service_url: https://api.components.espressif.com/
+      type: service
+    version: 2.6.3
+  idf:
+    component_hash: null
+    source:
+      type: idf
+    version: 5.3.1
+  lvgl/lvgl:
+    component_hash: b702d642e03e95928046d5c6726558e6444e112420c77efa5fdb6650b0a13c5d
+    source:
+      service_url: https://api.components.espressif.com/
+      type: service
+    version: 9.3.0
+  waveshare/esp_lcd_sh8601:
+    component_hash: 1a2829e9db4e0515bad6ce83368f199dec60519fbba40251d6c8249f5d070ae1
+    source:
+      service_url: https://api.components.espressif.com/
+      type: service
+    version: 1.0.2
+manifest_hash: 3774b5650310c7ca0c23dbb9d6f385b039917b5e656676a2ad4a8d32451b0f10
+target: esp32s3
+version: 1.0.0
