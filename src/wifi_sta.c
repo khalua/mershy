@@ -39,6 +39,7 @@ static const wifi_network_t kNetworks[] = WIFI_NETWORKS;
 
 static EventGroupHandle_t s_wifi_events;
 static volatile int s_retries;
+static volatile bool s_paused;  // radio off for low-power sleep
 
 static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -108,6 +109,12 @@ static bool connect_to(int n, int timeout_ms)
     cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     cfg.sta.pmf_cfg.capable = true;
     cfg.sta.pmf_cfg.required = false;
+    // Mesh / multi-AP networks broadcast one SSID from several access
+    // points. The default (fast scan) joins the FIRST one found, which can
+    // be a distant node with a barely-usable link. Scan every channel and
+    // join the strongest instead.
+    cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
 
     ESP_LOGI(TAG, "connecting to \"%s\"", kNetworks[n].ssid);
@@ -139,11 +146,15 @@ static bool connect_best(int timeout_ms)
 static void reconnect_task(void *arg)
 {
     while (true) {
+        if (s_paused) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
         if (xEventGroupGetBits(s_wifi_events) & CONNECTED_BIT) {
             xEventGroupWaitBits(s_wifi_events, LOST_BIT, pdFALSE, pdFALSE, portMAX_DELAY);
             continue;
         }
-        if (!connect_best(15000)) {
+        if (!connect_best(15000) && !s_paused) {
             vTaskDelay(pdMS_TO_TICKS(10000));
         }
     }
@@ -183,4 +194,31 @@ bool wifi_sta_connect(int timeout_ms)
 bool wifi_sta_is_connected(void)
 {
     return s_wifi_events != NULL && (xEventGroupGetBits(s_wifi_events) & CONNECTED_BIT);
+}
+
+void wifi_sta_pause(void)
+{
+    s_paused = true;
+    s_retries = NO_RETRY;  // the disconnect below must not trigger retries
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+    xEventGroupClearBits(s_wifi_events, CONNECTED_BIT);
+    ESP_LOGI(TAG, "radio off");
+}
+
+void wifi_sta_resume(void)
+{
+    ESP_ERROR_CHECK(esp_wifi_start());
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    s_paused = false;
+    xEventGroupSetBits(s_wifi_events, LOST_BIT);  // wakes reconnect_task
+    ESP_LOGI(TAG, "radio on, reconnecting");
+}
+
+bool wifi_sta_wait_connected(int timeout_ms)
+{
+    if (s_wifi_events == NULL) return false;
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_events, CONNECTED_BIT, pdFALSE, pdFALSE,
+                                           pdMS_TO_TICKS(timeout_ms));
+    return (bits & CONNECTED_BIT) != 0;
 }

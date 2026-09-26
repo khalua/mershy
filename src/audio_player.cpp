@@ -16,6 +16,10 @@ static const char *TAG = "player";
 
 static constexpr size_t kCapacity = AUDIO_OUTPUT_SAMPLE_RATE * 30;  // 30s, ~1.4MB PSRAM
 static constexpr size_t kFrame = AUDIO_OUTPUT_SAMPLE_RATE / 50;     // 20ms per write
+// Playback waits for this much queued audio before starting (and again after
+// running dry), so a slow link gives one short pause instead of stuttering
+// through every late network chunk.
+static constexpr size_t kPrebuffer = AUDIO_OUTPUT_SAMPLE_RATE * 3 / 10;  // 300ms
 
 static BoxAudioCodec *s_codec = nullptr;
 static void (*s_on_level)(float) = nullptr;
@@ -25,6 +29,8 @@ static int16_t *s_ring = nullptr;
 static size_t s_head = 0;   // next read
 static size_t s_count = 0;  // samples queued
 static std::atomic<bool> s_playing{false};  // player task mid-frame
+static bool s_started = false;  // prebuffer gate open (under s_mutex)
+static bool s_flush = false;    // everything is queued: play it out without prebuffering
 
 static float frame_level(const int16_t *mono, size_t n) {
     double sum_sq = 0.0;
@@ -44,7 +50,13 @@ static void player_task(void *arg) {
         size_t n = 0;
         {
             std::lock_guard<std::mutex> lock(s_mutex);
-            n = s_count < kFrame ? s_count : kFrame;
+            if (!s_started && (s_count >= kPrebuffer || (s_flush && s_count > 0))) {
+                s_started = true;
+            }
+            if (s_started && s_count == 0) {
+                s_started = false;  // ran dry: re-arm the prebuffer
+            }
+            n = s_started ? (s_count < kFrame ? s_count : kFrame) : 0;
             for (size_t i = 0; i < n; i++) {
                 mono[i] = s_ring[(s_head + i) % kCapacity];
             }
@@ -109,10 +121,18 @@ bool player_write(const int16_t *samples, size_t count, const std::function<bool
 }
 
 bool player_drain(const std::function<bool()> &should_stop) {
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        s_flush = true;  // nothing more is coming: play the tail even if short
+    }
     while (true) {
         {
             std::lock_guard<std::mutex> lock(s_mutex);
-            if (s_count == 0 && !s_playing) return true;
+            if (s_count == 0 && !s_playing) {
+                s_flush = false;
+                s_started = false;
+                return true;
+            }
         }
         if (should_stop()) {
             player_stop();
@@ -126,4 +146,6 @@ void player_stop() {
     std::lock_guard<std::mutex> lock(s_mutex);
     s_head = 0;
     s_count = 0;
+    s_started = false;
+    s_flush = false;
 }

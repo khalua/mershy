@@ -24,6 +24,15 @@ int Axp2101::GetBatteryLevel() {
     return ReadReg(0xA4);
 }
 
+// Status register 0x00: bit 5 = VBUS good, bit 3 = battery present.
+bool Axp2101::IsBatteryPresent() {
+    return (ReadReg(0x00) & 0b00001000) != 0;
+}
+
+bool Axp2101::IsUsbPowered() {
+    return (ReadReg(0x00) & 0b00100000) != 0;
+}
+
 float Axp2101::GetTemperature() {
     return ReadReg(0xA5);
 }

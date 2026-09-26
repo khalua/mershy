@@ -10,6 +10,7 @@
 // (scripts/gen_api_keys.py bakes them into src/api_keys.h).
 
 #include <atomic>
+#include <cstdio>
 #include <string>
 
 #include "freertos/FreeRTOS.h"
@@ -18,6 +19,8 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_sleep.h"
+#include "esp_lvgl_port.h"
 
 #include "app_config.h"
 #include "audio_player.h"
@@ -30,6 +33,7 @@
 #include "recorder.h"
 #include "settings.h"
 #include "stt_deepgram.h"
+#include "time_sync.h"
 #include "tts_elevenlabs.h"
 #include "wifi_sta.h"
 
@@ -40,6 +44,10 @@ static const char *TAG = "main";
 static BoxAudioCodec *s_codec = nullptr;
 static TaskHandle_t s_conversation_task = nullptr;
 static Mood s_mood = Mood::kNeutral;  // last mood Claude gave us
+
+static uint32_t now_ms() {
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
 
 // Input events. Flags carry what happened; the task notification just wakes
 // the conversation task so it can look at them.
@@ -65,6 +73,18 @@ static void on_tap() {
     wake_conversation_task();
 }
 
+// Reads the PMIC fuel gauge into the swipe panel, at most every 5s.
+// Called from both the LVGL task (swipes) and the conversation task; the
+// I2C driver serializes the reads.
+static void refresh_battery(bool force = false) {
+    static std::atomic<uint32_t> last_ms{0};
+    uint32_t now = now_ms();
+    if (!force && last_ms != 0 && now - last_ms < 5000) return;
+    last_ms = now;
+    BatteryStatus b = board_battery();
+    buddy_ui_set_battery(b.present, b.percent, b.usb);
+}
+
 static void set_volume(int volume) {
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
@@ -72,6 +92,7 @@ static void set_volume(int volume) {
     if (s_codec == nullptr) return;  // swipe during boot, before audio is up
     s_codec->SetOutputVolume(volume);
     s_volume_dirty = true;
+    refresh_battery();
     buddy_ui_show_volume(volume);
 }
 
@@ -110,10 +131,6 @@ static bool stop_requested() {
     return s_tap_pending.exchange(false) || s_boot_pending.load();
 }
 
-static uint32_t now_ms() {
-    return (uint32_t)(esp_timer_get_time() / 1000);
-}
-
 // Opens the Deepgram, Claude and ElevenLabs connections while the user is
 // still talking, so their TCP+TLS handshakes (~1.5s total) are done by the
 // time the requests go out. Runs below the conversation task's priority so
@@ -143,6 +160,11 @@ static void wait_warmed() {
     }
 }
 
+// Called from the Claude stream task around web searches.
+static void on_searching(bool searching) {
+    buddy_ui_set_status(searching ? "searching the web..." : "");
+}
+
 static void show_confused(const char *message) {
     buddy_ui_set_status("");
     buddy_ui_set_state(BuddyState::kConfused, s_mood);
@@ -154,8 +176,13 @@ static void show_confused(const char *message) {
 // One tap -> listen -> think -> speak exchange.
 static void run_exchange() {
     if (!wifi_sta_is_connected()) {
-        show_confused("No WiFi. Is the hotspot on?");
-        return;
+        // Right after waking, WiFi takes a few seconds to rejoin.
+        buddy_ui_set_status("connecting...");
+        if (!wifi_sta_wait_connected(8000)) {
+            show_confused("No WiFi. Is the hotspot on?");
+            return;
+        }
+        buddy_ui_set_status("");
     }
 
     buddy_ui_set_state(BuddyState::kListening, s_mood);
@@ -190,9 +217,27 @@ static void run_exchange() {
 
     uint32_t t_stt = now_ms();
 
+    // Prefix a device-status note so Mershy can answer "what's your volume?"
+    // or "how's your battery?" (the system prompt explains the note).
+    BatteryStatus battery = board_battery();
+    char clock[64];
+    char time_part[80] = "";
+    if (time_sync_now(clock, sizeof(clock))) {
+        snprintf(time_part, sizeof(time_part), "local time %s, ", clock);
+    }
+    char status[192];
+    if (battery.present) {
+        snprintf(status, sizeof(status), "(device status: %svolume %d%%, battery %d%%%s)\n",
+                 time_part, s_volume.load(), battery.percent, battery.usb ? ", plugged in" : "");
+    } else {
+        snprintf(status, sizeof(status),
+                 "(device status: %svolume %d%%, running on USB power, no battery)\n",
+                 time_part, s_volume.load());
+    }
+
     // Claude streams in the background; speech starts with the first
     // sentence while the rest is still being generated.
-    reply_stream_start(transcript);
+    reply_stream_start(status + transcript, on_searching);
 
     ReplyHeader header;
     if (!reply_stream_header(&header)) {
@@ -258,7 +303,7 @@ static void run_exchange() {
     }
 }
 
-enum class Power { kAwake, kDim, kAsleep };
+enum class Power { kAwake, kDim };
 
 static void fade_brightness(int from, int to) {
     const int steps = 12;
@@ -268,63 +313,94 @@ static void fade_brightness(int from, int to) {
     }
 }
 
-static void go_to_sleep(Power from) {
+static bool boot_held() {
+    return gpio_get_level(BOOT_BUTTON_GPIO) == 0;
+}
+
+// Light-sleeps the whole chip in 100ms slices until BOOT or a touch. Between
+// slices it polls the touch controller over I2C (its interrupt line isn't
+// wired up), which costs a few ms per wake.
+static void sleep_until_woken() {
+    while (boot_held()) vTaskDelay(pdMS_TO_TICKS(20));  // the press that slept us
+    while (true) {
+        esp_sleep_enable_timer_wakeup(100 * 1000);
+        esp_light_sleep_start();
+        if (boot_held() || board_touch_is_pressed()) break;
+    }
+    // Wait for release, so the waking touch isn't also taken as a tap.
+    while (boot_held() || board_touch_is_pressed()) vTaskDelay(pdMS_TO_TICKS(30));
+}
+
+// Low-power sleep: close his eyes, fade out, then panel sleep, LVGL stopped,
+// codecs and speaker amp off, radio off, CPU in light sleep. Returns once
+// woken, with everything back on (WiFi reconnects in the background).
+static void sleep_cycle(Power from) {
     ESP_LOGI(TAG, "sleeping");
     s_asleep = true;
     buddy_ui_set_status("");
     buddy_ui_set_sleeping(true);
     vTaskDelay(pdMS_TO_TICKS(400));  // let him close his eyes on screen first
     fade_brightness(from == Power::kDim ? BRIGHTNESS_DIM : BRIGHTNESS_AWAKE, 0);
-}
 
-static void wake_up() {
+    board_display_power(false);
+    lvgl_port_stop();
+    s_codec->EnableInput(false);
+    s_codec->EnableOutput(false);
+    wifi_sta_pause();
+
+    sleep_until_woken();
+
     ESP_LOGI(TAG, "waking");
+    wifi_sta_resume();
+    s_codec->EnableOutput(true);
+    s_codec->EnableInput(true);
     buddy_ui_set_sleeping(false);
-    board_set_brightness(BRIGHTNESS_AWAKE);
+    lvgl_port_resume();
+    vTaskDelay(pdMS_TO_TICKS(100));  // redraw the awake face before the panel lights up
+    board_display_power(true);
+    fade_brightness(0, BRIGHTNESS_AWAKE);
+
+    vTaskDelay(pdMS_TO_TICKS(100));  // let boot_button_task see the release
+    s_boot_pending = false;
+    s_tap_pending = false;
     s_asleep = false;
 }
 
 // Idle loop: waits for taps and BOOT presses, runs conversations, and dims /
-// sleeps the screen after IDLE_DIM_MS / IDLE_SLEEP_MS without one.
-//   awake/dim + tap  -> conversation (dim brightens first)
-//   awake/dim + BOOT -> sleep
-//   asleep + tap or BOOT -> wake (no conversation; tap again to talk)
+// sleeps after IDLE_DIM_MS / IDLE_SLEEP_MS without one.
+//   tap  -> conversation (dim brightens first)
+//   BOOT -> low-power sleep until a touch or BOOT (which only wakes; tap
+//           again to talk)
 static void conversation_task(void *arg) {
     Power power = Power::kAwake;
     uint32_t last_activity = now_ms();
     int wifi_shown = -1;  // last WiFi state reflected in the status pill
 
     while (true) {
-        if (power != Power::kAsleep) {
-            buddy_ui_set_state(BuddyState::kIdle, s_mood);
-            int wifi = wifi_sta_is_connected() ? 1 : 0;
-            if (wifi != wifi_shown) {
-                wifi_shown = wifi;
-                buddy_ui_set_status(wifi ? "" : "no wifi");
-            }
-        } else {
-            wifi_shown = -1;  // re-show after waking
+        buddy_ui_set_state(BuddyState::kIdle, s_mood);
+        int wifi = wifi_sta_is_connected() ? 1 : 0;
+        if (wifi != wifi_shown) {
+            wifi_shown = wifi;
+            buddy_ui_set_status(wifi ? "" : "no wifi");
         }
         if (s_volume_dirty.exchange(false)) {
             settings_set_volume(s_volume);
+        }
+        static uint32_t last_battery_ms = 0;
+        if (now_ms() - last_battery_ms >= 30000) {
+            last_battery_ms = now_ms();
+            refresh_battery(true);
         }
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
 
         bool boot = s_boot_pending.exchange(false);
         bool tap = s_tap_pending.exchange(false);
 
-        if (power == Power::kAsleep) {
-            if (tap || boot) {
-                wake_up();
-                power = Power::kAwake;
-                last_activity = now_ms();
-            }
-            continue;
-        }
-
         if (boot) {
-            go_to_sleep(power);
-            power = Power::kAsleep;
+            sleep_cycle(power);
+            power = Power::kAwake;
+            last_activity = now_ms();
+            wifi_shown = -1;
             continue;
         }
 
@@ -342,8 +418,10 @@ static void conversation_task(void *arg) {
 
         uint32_t idle = now_ms() - last_activity;
         if (idle >= IDLE_SLEEP_MS) {
-            go_to_sleep(power);
-            power = Power::kAsleep;
+            sleep_cycle(power);
+            power = Power::kAwake;
+            last_activity = now_ms();
+            wifi_shown = -1;
         } else if (idle >= IDLE_DIM_MS && power == Power::kAwake) {
             fade_brightness(BRIGHTNESS_AWAKE, BRIGHTNESS_DIM);
             power = Power::kDim;
@@ -371,10 +449,16 @@ extern "C" void app_main(void) {
 
     recorder_init(s_codec);
     player_init(s_codec, buddy_ui_set_level);
+    board_prepare_light_sleep();
+
+    BatteryStatus battery = board_battery();
+    ESP_LOGI(TAG, "battery: present=%d usb=%d charging=%d %d%%",
+             battery.present, battery.usb, battery.charging, battery.percent);
 
     if (!wifi_sta_connect(WIFI_CONNECT_TIMEOUT_MS)) {
         ESP_LOGW(TAG, "WiFi not connected yet; retrying in the background");
     }
+    time_sync_start();  // SNTP; syncs whenever WiFi is up
 
     // 12KB: TLS handshakes plus cJSON parsing. Core 0; LVGL runs on core 1.
     xTaskCreatePinnedToCore(conversation_task, "conversation", 12 * 1024, nullptr, 5,

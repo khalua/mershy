@@ -19,8 +19,9 @@ void player_init(BoxAudioCodec *codec, void (*on_level)(float));
 // is full. Returns false (dropping the rest) if should_stop() fires.
 bool player_write(const int16_t *samples, size_t count, const std::function<bool()> &should_stop);
 
-// Blocks until everything queued has played. Returns false if should_stop()
-// fired first (the queue is flushed in that case).
+// Blocks until everything queued has played. Call it once all audio for a
+// reply is queued: it also releases the 300ms prebuffer so a short tail
+// plays. Returns false if should_stop() fired first (queue flushed).
 bool player_drain(const std::function<bool()> &should_stop);
 
 // Drops everything queued, silencing the speaker right away.

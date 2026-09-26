@@ -18,7 +18,28 @@
     "[happy] [excited] [curious] [sad] [sleepy]. "                           \
     "If your owner asks you to be louder or quieter, or to set your volume, " \
     "also put one volume tag right after the mood tag: [volume up], "         \
-    "[volume down], or [volume N] with N from 0 to 100 -- and say you did it."
+    "[volume down], or [volume N] with N from 0 to 100 -- and say you did it. " \
+    "Each owner message starts with a (device status: ...) note from your "  \
+    "own body's sensors, not something the owner said. Use it only when it's " \
+    "relevant, e.g. if asked about your volume or battery, or the date and "   \
+    "time. You can search the web: do it for anything current, local or "     \
+    "that you're unsure of (opening hours, weather, news, scores). Before "    \
+    "searching, say one very short line like \"Let me look that up!\". Answer " \
+    "from the results in a couple of spoken sentences -- never read out "     \
+    "links or citations."
+
+// ---- Location & time ----
+// POSIX TZ string for local time (from SNTP). Pacific time with DST:
+#define LOCAL_TIMEZONE "PST8PDT,M3.2.0,M11.1.0"
+// Approximate location for web searches ("pool hours near me"). Leave
+// USER_CITY empty to omit it.
+#define USER_CITY     ""
+#define USER_REGION   "California"
+#define USER_COUNTRY  "US"
+#define USER_TIMEZONE "America/Los_Angeles"  // IANA name, for web search
+
+// ---- Web search (runs on Anthropic's servers; ~$10 per 1000 searches) ----
+#define WEB_SEARCH_MAX_USES 3  // per reply; each search adds a few seconds
 
 // ---- ElevenLabs TTS ----
 // Jon ("calm & nurturing"), from the Capsule app's voice list.

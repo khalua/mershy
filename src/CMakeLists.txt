@@ -6,6 +6,7 @@ idf_component_register(
          "audio_codec.cpp"
          "box_audio_codec.cpp"
          "wifi_sta.c"
+         "time_sync.c"
          "buddy_ui.cpp"
          "http_util.cpp"
          "recorder.cpp"

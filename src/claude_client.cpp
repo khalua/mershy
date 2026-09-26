@@ -36,6 +36,22 @@ static std::string build_request(const std::string &user_text) {
     cJSON *thinking = cJSON_AddObjectToObject(root, "thinking");
     cJSON_AddStringToObject(thinking, "type", "disabled");
 
+    // Anthropic's server-side web search: Claude decides when to search, the
+    // searches run on Anthropic's side, and results come back inside this
+    // same streamed response -- no extra requests from the device.
+    cJSON *tools = cJSON_AddArrayToObject(root, "tools");
+    cJSON *search = cJSON_CreateObject();
+    cJSON_AddStringToObject(search, "type", "web_search_20260209");
+    cJSON_AddStringToObject(search, "name", "web_search");
+    cJSON_AddNumberToObject(search, "max_uses", WEB_SEARCH_MAX_USES);
+    cJSON *loc = cJSON_AddObjectToObject(search, "user_location");
+    cJSON_AddStringToObject(loc, "type", "approximate");
+    if (USER_CITY[0] != '\0') cJSON_AddStringToObject(loc, "city", USER_CITY);
+    cJSON_AddStringToObject(loc, "region", USER_REGION);
+    cJSON_AddStringToObject(loc, "country", USER_COUNTRY);
+    cJSON_AddStringToObject(loc, "timezone", USER_TIMEZONE);
+    cJSON_AddItemToArray(tools, search);
+
     cJSON *messages = cJSON_AddArrayToObject(root, "messages");
     for (const auto &turn : s_history) {
         add_message(messages, "user", turn.first);
@@ -76,7 +92,9 @@ struct SseParser {
     std::string raw;  // all text generated so far
     std::string stop_reason;
     bool error = false;
+    bool searching = false;
     const std::function<void(const std::string &)> *on_text;
+    const std::function<void(bool)> *on_searching;
 
     void feed(const uint8_t *data, size_t len) {
         for (size_t i = 0; i < len; i++) {
@@ -97,6 +115,30 @@ struct SseParser {
         const char *type = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "type"));
         if (type == nullptr) {
             // ignore
+        } else if (strcmp(type, "content_block_start") == 0) {
+            // Block types: "text", or "server_tool_use" / "web_search_tool_result"
+            // around a search. Only text is spoken; the rest just drives the
+            // "searching" indicator.
+            const char *btype = cJSON_GetStringValue(
+                cJSON_GetObjectItem(cJSON_GetObjectItem(ev, "content_block"), "type"));
+            if (btype != nullptr) {
+                bool is_search = strcmp(btype, "server_tool_use") == 0;
+                bool is_text = strcmp(btype, "text") == 0;
+                if (is_search && !searching) {
+                    searching = true;
+                    ESP_LOGI(TAG, "web search");
+                    (*on_searching)(true);
+                } else if (is_text && searching) {
+                    searching = false;
+                    (*on_searching)(false);
+                }
+                // Text resumes in a new block after a search, with no
+                // leading space; keep the words apart.
+                if (is_text && !raw.empty() && raw.back() != ' ' && raw.back() != '\n') {
+                    raw += ' ';
+                    (*on_text)(" ");
+                }
+            }
         } else if (strcmp(type, "content_block_delta") == 0) {
             cJSON *delta = cJSON_GetObjectItem(ev, "delta");
             const char *dtype = cJSON_GetStringValue(cJSON_GetObjectItem(delta, "type"));
@@ -124,11 +166,13 @@ struct SseParser {
 
 ClaudeResult claude_chat_stream(const std::string &user_text,
                                 const std::function<void(const std::string &)> &on_text,
-                                const std::function<bool()> &cancelled) {
+                                const std::function<bool()> &cancelled,
+                                const std::function<void(bool)> &on_searching) {
     std::string body = build_request(user_text);
 
     SseParser parser;
     parser.on_text = &on_text;
+    parser.on_searching = &on_searching;
     bool was_cancelled = false;
     HttpDataFn on_data = [&](const uint8_t *data, size_t len) {
         if (cancelled()) {
@@ -148,6 +192,9 @@ ClaudeResult claude_chat_stream(const std::string &user_text,
     if (status != 200) {
         ESP_LOGE(TAG, "HTTP %d: %.400s", status, error_body.c_str());
         return ClaudeResult::kError;
+    }
+    if (parser.searching) {
+        on_searching(false);  // stream ended mid-search (e.g. pause_turn)
     }
     if (parser.stop_reason == "refusal") {
         ESP_LOGW(TAG, "refusal");

@@ -12,6 +12,8 @@ public:
     bool IsDischarging();
     bool IsChargingDone();
     int GetBatteryLevel();
+    bool IsBatteryPresent();
+    bool IsUsbPowered();
     float GetTemperature();
     void PowerOff();
 

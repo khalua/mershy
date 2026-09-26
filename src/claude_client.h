@@ -11,10 +11,13 @@ enum class ClaudeResult { kOk, kError, kRefusal, kCancelled };
 // Sends `user_text` with the running history and calls on_text with each
 // text fragment as it's generated (raw, including the leading mood/volume
 // tags). `cancelled` is polled per fragment; returning true stops early.
+// on_searching(true) fires when Claude starts a web search, and (false) when
+// it resumes writing text after one.
 // On kOk both turns are appended to the history; otherwise it's unchanged.
 ClaudeResult claude_chat_stream(const std::string &user_text,
                                 const std::function<void(const std::string &)> &on_text,
-                                const std::function<bool()> &cancelled);
+                                const std::function<bool()> &cancelled,
+                                const std::function<void(bool)> &on_searching);
 
 void claude_reset_history();
 

@@ -16,6 +16,14 @@ bool wifi_sta_connect(int timeout_ms);
 
 bool wifi_sta_is_connected(void);
 
+// Blocks up to timeout_ms for a connection (e.g. right after waking).
+bool wifi_sta_wait_connected(int timeout_ms);
+
+// Low-power sleep: turn the radio off, and back on (then rejoins the best
+// known network in the background).
+void wifi_sta_pause(void);
+void wifi_sta_resume(void);
+
 #ifdef __cplusplus
 }
 #endif

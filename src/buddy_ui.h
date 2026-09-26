@@ -34,8 +34,12 @@ void buddy_ui_set_level(float level);        // 0..1, mic or playback loudness
 void buddy_ui_set_text(const char *text);    // reply text; "" hides it
 void buddy_ui_set_status(const char *text);  // small line at the top; "" hides it
 
-// Pops up the volume bar for ~1.5s.
+// Pops up the swipe panel (volume bar + battery) for ~1.5s.
 void buddy_ui_show_volume(int percent);
+
+// Battery shown in the swipe panel. present=false -> "USB power"; a bolt
+// follows the percentage while plugged in (charging or already full).
+void buddy_ui_set_battery(bool present, int percent, bool plugged_in);
 
 // Sleeping face (eyes closed), overlays hidden, no blinking. Brightness is
 // the caller's job (board_set_brightness).

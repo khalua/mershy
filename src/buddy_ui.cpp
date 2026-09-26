@@ -130,6 +130,8 @@ static struct {
     lv_obj_t *status_label = nullptr;
     lv_obj_t *volume = nullptr;   // pill with speaker icon + bar
     lv_obj_t *volume_bar = nullptr;
+    lv_obj_t *battery_icon = nullptr;
+    lv_obj_t *battery_label = nullptr;
     uint32_t volume_hide_at = 0;
 } s;
 
@@ -401,22 +403,47 @@ void buddy_ui_init(lv_display_t *display, void (*on_tap)(), void (*on_volume_ste
     lv_label_set_text(s.status_label, "");
     lv_obj_add_flag(s.status, LV_OBJ_FLAG_HIDDEN);
 
+    // Swipe panel: volume bar on top, battery below.
     s.volume = make_pill(screen);
-    lv_obj_set_flex_flow(s.volume, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_radius(s.volume, 22, 0);
+    lv_obj_set_flex_flow(s.volume, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s.volume, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(s.volume, 10, 0);
+    lv_obj_set_style_pad_row(s.volume, 8, 0);
     lv_obj_set_style_pad_ver(s.volume, 10, 0);
     lv_obj_set_style_bg_opa(s.volume, 200, 0);
     lv_obj_align(s.volume, LV_ALIGN_TOP_MID, 0, 80);
-    lv_obj_t *icon = lv_label_create(s.volume);
+
+    lv_obj_t *vol_row = lv_obj_create(s.volume);
+    lv_obj_remove_style_all(vol_row);
+    lv_obj_set_size(vol_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(vol_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(vol_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(vol_row, 10, 0);
+    lv_obj_t *icon = lv_label_create(vol_row);
     lv_obj_set_style_text_font(icon, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(icon, lv_color_white(), 0);
     lv_label_set_text(icon, LV_SYMBOL_VOLUME_MAX);
-    s.volume_bar = lv_bar_create(s.volume);
+    s.volume_bar = lv_bar_create(vol_row);
     lv_obj_set_size(s.volume_bar, 150, 10);
     lv_bar_set_range(s.volume_bar, 0, 100);
     lv_obj_set_style_bg_color(s.volume_bar, lv_color_hex(0x444444), LV_PART_MAIN);
     lv_obj_set_style_bg_color(s.volume_bar, lv_color_white(), LV_PART_INDICATOR);
+
+    lv_obj_t *bat_row = lv_obj_create(s.volume);
+    lv_obj_remove_style_all(bat_row);
+    lv_obj_set_size(bat_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(bat_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(bat_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(bat_row, 8, 0);
+    s.battery_icon = lv_label_create(bat_row);
+    lv_obj_set_style_text_font(s.battery_icon, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(s.battery_icon, lv_color_white(), 0);
+    lv_label_set_text(s.battery_icon, LV_SYMBOL_BATTERY_EMPTY);
+    s.battery_label = lv_label_create(bat_row);
+    lv_obj_set_style_text_font(s.battery_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(s.battery_label, lv_color_white(), 0);
+    lv_label_set_text(s.battery_label, "--");
+
     lv_obj_add_flag(s.volume, LV_OBJ_FLAG_HIDDEN);
 
     uint32_t now = lv_tick_get();
@@ -439,6 +466,27 @@ void buddy_ui_set_state(BuddyState state, Mood mood) {
     }
     s.state = state;
     s.mood = mood;
+    lvgl_port_unlock();
+}
+
+void buddy_ui_set_battery(bool present, int percent, bool plugged_in) {
+    lvgl_port_lock(0);
+    if (!present) {
+        lv_label_set_text(s.battery_icon, LV_SYMBOL_USB);
+        lv_label_set_text(s.battery_label, "USB power");
+        lv_obj_set_style_text_color(s.battery_icon, lv_color_white(), 0);
+    } else {
+        const char *icon = percent >= 88 ? LV_SYMBOL_BATTERY_FULL
+                         : percent >= 63 ? LV_SYMBOL_BATTERY_3
+                         : percent >= 38 ? LV_SYMBOL_BATTERY_2
+                         : percent >= 13 ? LV_SYMBOL_BATTERY_1
+                                         : LV_SYMBOL_BATTERY_EMPTY;
+        lv_label_set_text(s.battery_icon, icon);
+        lv_obj_set_style_text_color(s.battery_icon,
+                                    percent < 15 && !plugged_in ? lv_color_hex(0xFF5A5A)
+                                                              : lv_color_white(), 0);
+        lv_label_set_text_fmt(s.battery_label, plugged_in ? "%d%% " LV_SYMBOL_CHARGE : "%d%%", percent);
+    }
     lvgl_port_unlock();
 }
 

@@ -13,6 +13,9 @@
 #include <esp_lvgl_port.h>
 #include <esp_psram.h>
 #include <esp_rom_sys.h>
+#include <esp_sleep.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <driver/gpio.h>
 #include <initializer_list>
 
@@ -58,12 +61,17 @@ public:
         ESP_LOGI(TAG, "AXP2101 LDO enable 0x90: 0x%02X -> 0x%02X (ALDO1/codecs on)",
                  ldo_en, ReadReg(0x90));
 
+        // Fuel gauge on (reg 0x18 bit 3), so 0xA4 reports battery percent.
+        WriteReg(0x18, ReadReg(0x18) | 0x08);
+
         WriteReg(0x64, 0x02);  // CV charger voltage = 4.1V
         WriteReg(0x61, 0x02);  // precharge current = 50mA
         WriteReg(0x62, 0x08);  // charger current = 200mA
         WriteReg(0x63, 0x01);  // term charge current = 25mA
     }
 };
+
+static Pmic *s_pmic = nullptr;
 
 // The codecs clamp the shared bus low whenever ALDO1 is off (see Pmic above),
 // so a stuck-low bus at boot is a specific, recoverable condition rather than
@@ -237,6 +245,8 @@ static lv_display_t *init_display() {
 // 1.75 -- the 1.75C may differ. If taps don't register, try TOUCH_PIN_RST =
 // GPIO_NUM_NC first, then the mirror flags in board_config.h. Non-fatal on
 // failure: the buddy still boots, it just can't be tapped.
+static esp_lcd_touch_handle_t s_touch = nullptr;
+
 static bool init_touch(i2c_master_bus_handle_t i2c_bus, lv_display_t *display) {
     esp_lcd_touch_config_t tp_cfg = {};
     tp_cfg.x_max = DISPLAY_WIDTH - 1;
@@ -262,6 +272,7 @@ static bool init_touch(i2c_master_bus_handle_t i2c_bus, lv_display_t *display) {
 
     esp_lcd_touch_handle_t tp = nullptr;
     ret = esp_lcd_touch_new_i2c_cst9217(tp_io, &tp_cfg, &tp);
+    s_touch = tp;
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "CST9217 init failed: %s", esp_err_to_name(ret));
         return false;
@@ -287,6 +298,7 @@ BoardHandles board_bringup_init() {
 
     ESP_LOGI(TAG, "Init AXP2101");
     static Pmic pmic(handles.i2c_bus, 0x34);  // powers the mic (ALDO1); left running
+    s_pmic = &pmic;
 
     // Deliberately after the PMIC, not before (as the vendor reference
     // orders it): if the TCA9554's own supply rail comes from the PMIC,
@@ -311,4 +323,59 @@ void board_set_brightness(uint8_t percent) {
     lvgl_port_lock(0);
     esp_lcd_panel_io_tx_param(s_panel_io, cmd, &level, 1);
     lvgl_port_unlock();
+}
+
+static void panel_cmd(uint8_t cmd) {
+    int lcd_cmd = (int)((LCD_OPCODE_WRITE_CMD << 24) | ((uint32_t)cmd << 8));
+    esp_lcd_panel_io_tx_param(s_panel_io, lcd_cmd, nullptr, 0);
+}
+
+void board_display_power(bool on) {
+    if (s_panel_io == nullptr) return;
+    lvgl_port_lock(0);
+    if (on) {
+        panel_cmd(0x11);  // sleep out
+        vTaskDelay(pdMS_TO_TICKS(120));  // SH8601 needs 120ms after sleep-out
+        panel_cmd(0x29);  // display on
+    } else {
+        panel_cmd(0x28);  // display off
+        panel_cmd(0x10);  // sleep in
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    lvgl_port_unlock();
+}
+
+bool board_touch_is_pressed() {
+    if (s_touch == nullptr) return false;
+    if (esp_lcd_touch_read_data(s_touch) != ESP_OK) return false;
+    esp_lcd_touch_point_data_t point;
+    uint8_t count = 0;
+    esp_lcd_touch_get_data(s_touch, &point, &count, 1);
+    return count > 0;
+}
+
+void board_prepare_light_sleep() {
+    // By default light sleep switches every GPIO to its isolated sleep
+    // config. These must keep driving: the panel/touch reset lines (a float
+    // would reset them), the panel chip-select (keeps QSPI idle), the
+    // speaker amp enable, and the shared I2C bus.
+    for (gpio_num_t pin : {LCD_PIN_NUM_RST, LCD_PIN_NUM_CS, TOUCH_PIN_RST, AUDIO_CODEC_PA_PIN,
+                           AUDIO_CODEC_I2C_SDA_PIN, AUDIO_CODEC_I2C_SCL_PIN}) {
+        gpio_sleep_sel_dis(pin);
+    }
+    gpio_wakeup_enable(BOOT_BUTTON_GPIO, GPIO_INTR_LOW_LEVEL);
+    esp_sleep_enable_gpio_wakeup();
+}
+
+BatteryStatus board_battery() {
+    BatteryStatus b = {};
+    if (s_pmic == nullptr) return b;
+    b.present = s_pmic->IsBatteryPresent();
+    b.usb = s_pmic->IsUsbPowered();
+    b.charging = b.present && s_pmic->IsCharging();
+    if (b.present) {
+        int level = s_pmic->GetBatteryLevel();
+        b.percent = level < 0 ? 0 : (level > 100 ? 100 : level);
+    }
+    return b;
 }

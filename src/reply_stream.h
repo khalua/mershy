@@ -19,7 +19,9 @@ struct ReplyHeader {
 };
 
 // Starts streaming the reply to `user_text`. Only one stream at a time.
-void reply_stream_start(const std::string &user_text);
+// on_searching is called (from the stream task) when a web search starts
+// (true) and when text resumes (false).
+void reply_stream_start(const std::string &user_text, void (*on_searching)(bool));
 
 // Blocks until the leading tags are parsed (or the stream ended), then
 // fills `out`. Returns false if the stream failed before producing text.

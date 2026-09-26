@@ -22,6 +22,8 @@ static struct {
     std::string pending;      // untagged text not yet handed out
     bool tags_done = false;
     bool first_handed_out = false;
+    bool flush = false;       // hand out pending text as-is (a search started)
+    void (*on_searching)(bool) = nullptr;
     bool done = false;
     ClaudeResult result = ClaudeResult::kOk;
     ReplyHeader header;
@@ -76,7 +78,17 @@ static void stream_task(void *arg) {
             }
             xSemaphoreGive(s.changed);
         },
-        [] { return s.cancel.load(); });
+        [] { return s.cancel.load(); },
+        [](bool searching) {
+            if (searching) {
+                // Whatever came before the search ("Let me look that up!")
+                // is complete: speak it now instead of waiting out the search.
+                std::lock_guard<std::mutex> lock(s.mutex);
+                s.flush = true;
+            }
+            if (s.on_searching != nullptr) s.on_searching(searching);
+            xSemaphoreGive(s.changed);
+        });
 
     {
         std::lock_guard<std::mutex> lock(s.mutex);
@@ -89,7 +101,7 @@ static void stream_task(void *arg) {
     vTaskDelete(nullptr);
 }
 
-void reply_stream_start(const std::string &user_text) {
+void reply_stream_start(const std::string &user_text, void (*on_searching)(bool)) {
     if (s.changed == nullptr) {
         s.changed = xSemaphoreCreateBinary();
         s.finished = xSemaphoreCreateBinary();
@@ -100,6 +112,8 @@ void reply_stream_start(const std::string &user_text) {
         s.pending.clear();
         s.tags_done = false;
         s.first_handed_out = false;
+        s.flush = false;
+        s.on_searching = on_searching;
         s.done = false;
         s.result = ClaudeResult::kOk;
         s.header = ReplyHeader();
@@ -153,7 +167,8 @@ bool reply_stream_next(std::string *out) {
             std::lock_guard<std::mutex> lock(s.mutex);
             if (s.tags_done) {
                 size_t end = chunk_end(s.pending, !s.first_handed_out);
-                if (end == std::string::npos && s.done) end = s.pending.size();
+                if (end == std::string::npos && (s.done || s.flush)) end = s.pending.size();
+                s.flush = false;
                 if (end != std::string::npos) {
                     *out = s.pending.substr(0, end);
                     s.pending.erase(0, end);
